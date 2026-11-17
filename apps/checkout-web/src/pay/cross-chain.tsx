@@ -1,4 +1,4 @@
-import { ArrowUpRightIcon, CircleCheckIcon, CircleXIcon, Loader2Icon, WalletIcon } from 'lucide-react';
+import { ArrowUpRightIcon, CheckCircleIcon, XCircleIcon, SpinnerGapIcon, WalletIcon } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -20,10 +20,10 @@ function stepLabel(step: StepKey, chain: string, state: StepState): string {
 }
 
 function StepIcon({ state, index }: { state: StepState; index: number }) {
-  if (state === 'active') return <Loader2Icon className="size-5 animate-spin text-foreground" />;
-  if (state === 'done') return <CircleCheckIcon className="size-5 text-success" />;
-  if (state === 'skipped') return <CircleCheckIcon className="size-5 text-muted-foreground" />;
-  if (state === 'error') return <CircleXIcon className="size-5 text-destructive" />;
+  if (state === 'active') return <SpinnerGapIcon className="size-5 animate-spin text-foreground" />;
+  if (state === 'done') return <CheckCircleIcon className="size-5 text-success" />;
+  if (state === 'skipped') return <CheckCircleIcon className="size-5 text-muted-foreground" />;
+  if (state === 'error') return <XCircleIcon className="size-5 text-destructive" />;
   return <span className="grid size-5 place-items-center rounded-full border text-[0.6875rem] font-medium text-muted-foreground">{index + 1}</span>;
 }
 
@@ -180,7 +180,7 @@ export function CrossChain({ invoiceId, sources, open }: { invoiceId: string; so
 
       {error && (
         <Alert variant="destructive">
-          <CircleXIcon />
+          <XCircleIcon />
           <AlertTitle>Not sent</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
@@ -195,7 +195,7 @@ export function CrossChain({ invoiceId, sources, open }: { invoiceId: string; so
         </Button>
       ) : (
         <Button size="lg" className="h-11 w-full text-base" disabled={!plan || running} onClick={() => void pay()}>
-          {running ? <Loader2Icon className="animate-spin" /> : <WalletIcon />}
+          {running ? <SpinnerGapIcon className="animate-spin" /> : <WalletIcon />}
           {running ? 'Continue in your wallet' : plan ? `Pay ${groupDecimal(plan.sendAmount)} USDC` : 'Pay with wallet'}
         </Button>
       )}

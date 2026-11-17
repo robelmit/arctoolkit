@@ -1,4 +1,4 @@
-import { ArrowLeftRightIcon, ArrowUpRightIcon, CircleCheckIcon, ClockIcon, InfoIcon, ShieldCheckIcon, TimerOffIcon, WalletIcon, ZapIcon } from 'lucide-react';
+import { ArrowsLeftRightIcon, ArrowUpRightIcon, CheckCircleIcon, ClockIcon, InfoIcon, ShieldCheckIcon, HourglassIcon, WalletIcon, LightningIcon } from '@phosphor-icons/react';
 import { CopyField } from '@/components/copy-field';
 import { ShopMark } from '@/components/shop-mark';
 import { Badge } from '@/components/ui/badge';
@@ -90,7 +90,7 @@ function Paid({ data, status }: { data: PayData; status: PublicStatus }) {
   return (
     <div className="flex flex-col items-center gap-4 py-6 text-center duration-500 animate-in fade-in zoom-in-95">
       <div className="grid size-16 place-items-center rounded-full bg-success/12 text-success ring-8 ring-success/5">
-        <CircleCheckIcon className="size-9" strokeWidth={1.75} />
+        <CheckCircleIcon className="size-9" weight="duotone" />
       </div>
       <div className="flex flex-col gap-1">
         <h2 className="text-xl font-semibold tracking-tight">Payment received</h2>
@@ -114,7 +114,7 @@ function Expired({ data, status }: { data: PayData; status: PublicStatus }) {
   return (
     <div className="flex flex-col items-center gap-4 py-6 text-center">
       <div className="grid size-16 place-items-center rounded-full bg-muted text-muted-foreground">
-        <TimerOffIcon className="size-8" strokeWidth={1.75} />
+        <HourglassIcon className="size-8" weight="duotone" />
       </div>
       <div className="flex flex-col gap-1">
         <h2 className="text-xl font-semibold tracking-tight">This invoice expired</h2>
@@ -168,11 +168,11 @@ export function PayPage({ data }: { data: PayData }) {
                   <Tabs defaultValue="arc">
                     <TabsList className="w-full">
                       <TabsTrigger value="arc">
-                        <ZapIcon />
+                        <LightningIcon />
                         On Arc
                       </TabsTrigger>
                       <TabsTrigger value="other">
-                        <ArrowLeftRightIcon />
+                        <ArrowsLeftRightIcon />
                         From another chain
                       </TabsTrigger>
                     </TabsList>

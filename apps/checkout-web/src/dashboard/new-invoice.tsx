@@ -1,4 +1,4 @@
-import { ArrowUpRightIcon, CheckIcon, CopyIcon, Loader2Icon, PlusIcon } from 'lucide-react';
+import { ArrowUpRightIcon, CheckIcon, CopyIcon, SpinnerGapIcon, PlusIcon } from '@phosphor-icons/react';
 import { useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -193,7 +193,7 @@ export function NewInvoiceDialog({ api, modes, onCreated }: { api: Api; modes: r
             {error && <p className="text-sm text-destructive">{error}</p>}
             <DialogFooter>
               <Button type="submit" disabled={busy} className="w-full sm:w-auto">
-                {busy && <Loader2Icon className="animate-spin" />}
+                {busy && <SpinnerGapIcon className="animate-spin" />}
                 Create invoice
               </Button>
             </DialogFooter>

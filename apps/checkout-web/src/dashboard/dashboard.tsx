@@ -1,4 +1,4 @@
-import { ArrowUpRightIcon, CircleAlertIcon, CopyIcon, InboxIcon, KeyRoundIcon, Loader2Icon, LogOutIcon, ReceiptIcon, SendIcon, WalletCardsIcon } from 'lucide-react';
+import { ArrowUpRightIcon, WarningCircleIcon, CopyIcon, TrayIcon, KeyIcon, SpinnerGapIcon, SignOutIcon, ReceiptIcon, PaperPlaneTiltIcon, CoinsIcon } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import { ShopMark } from '@/components/shop-mark';
@@ -65,7 +65,7 @@ function SignIn({ data, onKey }: { data: DashboardData; onKey: (key: string) => 
       <Card className="w-full max-w-sm shadow-sm [--card-spacing:--spacing(6)]">
         <CardHeader className="justify-items-center text-center">
           <div className="mb-2 grid size-12 place-items-center rounded-full bg-muted">
-            <KeyRoundIcon className="size-5" />
+            <KeyIcon className="size-5" />
           </div>
           <CardTitle className="text-lg font-semibold">{data.shopName}</CardTitle>
           <CardDescription>Enter the checkout's API key. It stays in this tab and goes only to this server.</CardDescription>
@@ -78,7 +78,7 @@ function SignIn({ data, onKey }: { data: DashboardData; onKey: (key: string) => 
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
             <Button type="submit" disabled={busy || key.trim().length === 0} className="w-full">
-              {busy && <Loader2Icon className="animate-spin" />}
+              {busy && <SpinnerGapIcon className="animate-spin" />}
               Open dashboard
             </Button>
           </form>
@@ -182,7 +182,7 @@ function Board({ data, api, onSignOut }: { data: DashboardData; api: Api; onSign
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button variant="ghost" size="icon" aria-label="Sign out" onClick={onSignOut}>
-                  <LogOutIcon />
+                  <SignOutIcon />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Sign out</TooltipContent>
@@ -198,10 +198,10 @@ function Board({ data, api, onSignOut }: { data: DashboardData; api: Api; onSign
             label="Received"
             value={invoices ? `${formatUnits(paidUsdc)}` : <Skeleton className="h-8 w-20" />}
             note={invoices ? `USDC from ${paid.length} paid${paidEurc > 0n ? ` · ${formatUnits(paidEurc)} EURC` : ''}` : undefined}
-            icon={<WalletCardsIcon />}
+            icon={<CoinsIcon />}
           />
-          <Stat label="Needs review" value={unmatched.length} note="Payments no invoice claims" icon={<CircleAlertIcon />} tone={unmatched.length > 0 ? 'warning' : undefined} />
-          <Stat label="Webhooks waiting" value={webhooks.length} note={webhooks.length > 0 ? 'Retrying on a schedule' : 'All delivered'} icon={<SendIcon />} />
+          <Stat label="Needs review" value={unmatched.length} note="Payments no invoice claims" icon={<WarningCircleIcon />} tone={unmatched.length > 0 ? 'warning' : undefined} />
+          <Stat label="Webhooks waiting" value={webhooks.length} note={webhooks.length > 0 ? 'Retrying on a schedule' : 'All delivered'} icon={<PaperPlaneTiltIcon />} />
         </div>
 
         <Tabs defaultValue="invoices">
@@ -313,7 +313,7 @@ function Board({ data, api, onSignOut }: { data: DashboardData; api: Api; onSign
           <TabsContent value="review">
             <Card className="gap-0 py-0">
               {unmatched.length === 0 ? (
-                <Empty icon={<InboxIcon />} title="Nothing to review">
+                <Empty icon={<TrayIcon />} title="Nothing to review">
                   A payment the checkout cannot place for certain (a rounded amount, a second payment, an amount two invoices could claim) shows up here instead of being credited by guess.
                 </Empty>
               ) : (
@@ -367,7 +367,7 @@ function Board({ data, api, onSignOut }: { data: DashboardData; api: Api; onSign
           <TabsContent value="webhooks">
             <Card className="gap-0 py-0">
               {webhooks.length === 0 ? (
-                <Empty icon={<SendIcon />} title="Every webhook delivered">
+                <Empty icon={<PaperPlaneTiltIcon />} title="Every webhook delivered">
                   A delivery that fails is retried after 5 s, 30 s, 2 min, 10 min, 1 h and 6 h. Any still waiting are listed here with the last error.
                 </Empty>
               ) : (
