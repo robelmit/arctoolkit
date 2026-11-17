@@ -42,6 +42,50 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.5)
 
+  apps/checkout:
+    dependencies:
+      '@arctoolkit/evm':
+        specifier: workspace:^
+        version: link:../../packages/evm
+      '@arctoolkit/pay':
+        specifier: workspace:^
+        version: link:../../packages/pay
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.15
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.5
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.5)
+
+  examples/webhook-receiver:
+    dependencies:
+      '@arctoolkit/pay':
+        specifier: workspace:^
+        version: link:../../packages/pay
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.15
+    devDependencies:
+      '@arctoolkit/evm':
+        specifier: workspace:^
+        version: link:../../packages/evm
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.5
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.5)
+
   packages/evm:
     devDependencies:
       '@types/node':

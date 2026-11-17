@@ -3,6 +3,7 @@ node_modules
 **/node_modules
 **/dist
 .turbo
-**/target
+**/.turbo
+**/data
 .env
 .env.*

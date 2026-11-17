@@ -1,0 +1,27 @@
+{
+  "name": "@arctoolkit/checkout",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A self-hosted, non-custodial USDC and EURC checkout for Arc: a merchant API to create invoices, a payment page with a QR code and live status, and signed webhooks. It never holds a key.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rimraf .turbo"
+  },
+  "dependencies": {
+    "@arctoolkit/evm": "workspace:^",
+    "@arctoolkit/pay": "workspace:^",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
