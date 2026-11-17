@@ -17,6 +17,8 @@ Arc pays gas in USDC, and USDC on Arc has two faces: the native coin (18 decimal
 
 It also never guesses. A payment it cannot place with certainty (wrong amount, an invoice already paid, an amount two invoices could claim) is recorded and announced for a person to look at, not credited.
 
+And a customer does not need USDC on Arc already. With USDC on Base, Ethereum, Arbitrum, OP Mainnet, Polygon or Avalanche, the payment page has their wallet send it through Circle's CCTP, and Circle's Forwarding Service delivers it to the invoice on Arc. No bridge to visit, and no key on the shop's side.
+
 ## Quick start
 
 ```

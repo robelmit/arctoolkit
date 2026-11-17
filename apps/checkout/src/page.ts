@@ -18,6 +18,8 @@ export interface PageInput {
   readonly testnet: boolean;
   /** A fresh value per response, allowing the one inline script. */
   readonly nonce: string;
+  /** Chains the payer may pay from through Circle's CCTP, or null when this invoice is paid on Arc only. */
+  readonly crossChain?: readonly { readonly key: string; readonly name: string }[] | null;
 }
 
 export function checkoutPage(input: PageInput): string {
@@ -28,6 +30,17 @@ export function checkoutPage(input: PageInput): string {
     invoice.mode === 'amount'
       ? '<p class="note">Send exactly this amount: the last digits identify your payment.</p>'
       : '<p class="note">This address is for this payment only.</p>';
+  const sources = input.crossChain ?? [];
+  const crossChain =
+    sources.length > 0 && invoice.status === 'open'
+      ? `<section class="cross" id="cross">
+    <h2>USDC on another chain?</h2>
+    <p class="note">Pay from ${escapeHtml(sources.map((s) => s.name).join(', '))} with your browser wallet. Circle's CCTP brings it to Arc; its fee, a few cents, is added to what you send, so the shop receives the full amount.</p>
+    <div class="row"><select id="cross-from" aria-label="Chain to pay from">${sources.map((s) => `<option value="${escapeHtml(s.key)}">${escapeHtml(s.name)}</option>`).join('')}</select><button type="button" id="cross-go">Pay with wallet</button></div>
+    <p class="note" id="cross-note" role="status" aria-live="polite"></p>
+    <a id="cross-tx" href="#" hidden>View the transfer</a>
+  </section>`
+      : '';
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -57,6 +70,11 @@ export function checkoutPage(input: PageInput): string {
   .badge { display: inline-block; font-size: .75rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--warn); color: var(--warn); margin-left: 6px; }
   footer { margin-top: 16px; font-size: .75rem; color: var(--muted); }
   a { color: var(--accent); }
+  .cross { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .cross h2 { font-size: 1rem; margin: 0 0 4px; }
+  .cross .note { margin-bottom: 8px; }
+  select { flex: 1; font: inherit; font-size: .9rem; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+  button:disabled { opacity: .6; cursor: default; }
 </style>
 </head>
 <body>
@@ -71,6 +89,7 @@ export function checkoutPage(input: PageInput): string {
   <div class="row"><code id="amount">${escapeHtml(invoice.dueAmount)}</code><button type="button" data-copy="amount">Copy</button></div>
   <p class="muted">Network: Arc ${input.testnet ? 'testnet' : 'mainnet'} · ${escapeHtml(invoice.currency)}</p>
   <div class="status" id="status" data-state="${invoice.status}" role="status" aria-live="polite">${statusText(invoice)}</div>
+  ${crossChain}
   <footer>Paid straight to the shop's own address. Arc payments are final within a second. <a id="tx" href="#" hidden>View transaction</a></footer>
 </main>
 <script nonce="${input.nonce}">
@@ -90,14 +109,86 @@ export function checkoutPage(input: PageInput): string {
     status.textContent = s.status === 'paid' ? 'Paid. Thank you.' + (s.late ? ' (received after the invoice expired)' : '') : s.status === 'expired' ? 'This invoice expired. Ask the shop for a new one before paying.' : s.received !== '0.00' ? 'Partly paid: ' + s.received + ' received. Waiting for the rest…' : 'Waiting for payment… expires in ' + Math.max(0, Math.round((s.expiresAt - Date.now()) / 60000)) + ' min';
     if (s.lastTx) { tx.href = explorer + '/tx/' + s.lastTx; tx.hidden = false; }
   };
+  let open = true;
   const tick = async () => {
     try {
       const response = await fetch('/pay/' + encodeURIComponent(id) + '/status', { cache: 'no-store' });
-      if (response.ok) { const s = await response.json(); show(s); if (s.status !== 'open') return; }
+      if (response.ok) {
+        const s = await response.json();
+        show(s);
+        if (s.status !== 'open') { open = false; const cross = document.getElementById('cross'); if (cross) cross.hidden = true; return; }
+      }
     } catch {}
     setTimeout(tick, 2000);
   };
   tick();
+
+  // Paying from another chain: the payer's own wallet approves, then burns USDC on that chain for Circle to mint here.
+  const go = document.getElementById('cross-go');
+  if (go) {
+    const from = document.getElementById('cross-from');
+    const note = document.getElementById('cross-note');
+    const link = document.getElementById('cross-tx');
+    const say = (text) => { note.textContent = text; };
+    const pad = (address) => address.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const confirmed = async (eth, hash) => {
+      for (let i = 0; i < 300; i += 1) {
+        const receipt = await eth.request({ method: 'eth_getTransactionReceipt', params: [hash] });
+        if (receipt) { if (receipt.status !== '0x1') throw new Error('The transaction failed in your wallet.'); return; }
+        await sleep(2000);
+      }
+      throw new Error('Not confirmed yet. Check your wallet, then reload this page.');
+    };
+    const follow = async (plan, hash) => {
+      link.href = plan.source.explorer + '/tx/' + hash;
+      link.hidden = false;
+      say('Sent on ' + plan.source.name + '. Waiting for it to be confirmed there…');
+      while (open) {
+        await sleep(4000);
+        try {
+          const response = await fetch('/pay/' + encodeURIComponent(id) + '/cctp/status?from=' + encodeURIComponent(plan.source.key) + '&tx=' + encodeURIComponent(hash), { cache: 'no-store' });
+          if (!response.ok) continue;
+          const s = await response.json();
+          if (s.state === 'attested') say('Confirmed on ' + plan.source.name + '. Circle is bringing it to Arc…');
+          if (s.state === 'delivered') say('Arrived on Arc. Updating…');
+        } catch {}
+      }
+    };
+    go.addEventListener('click', async () => {
+      const eth = window.ethereum;
+      if (!eth) { say('No browser wallet found. Open this page in your wallet app, or pay on Arc with the details above.'); return; }
+      go.disabled = true;
+      from.disabled = true;
+      try {
+        say('Getting the fee…');
+        const response = await fetch('/pay/' + encodeURIComponent(id) + '/cctp?from=' + encodeURIComponent(from.value), { cache: 'no-store' });
+        const plan = await response.json();
+        if (!response.ok) throw new Error(plan.error && plan.error.message ? plan.error.message : 'The payment could not be prepared.');
+        const [account] = await eth.request({ method: 'eth_requestAccounts' });
+        const chain = '0x' + plan.source.chainId.toString(16);
+        if ((await eth.request({ method: 'eth_chainId' })) !== chain) {
+          try { await eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chain }] }); }
+          catch (e) { throw new Error('Switch your wallet to ' + plan.source.name + ', then try again.'); }
+        }
+        const read = (to, data) => eth.request({ method: 'eth_call', params: [{ to, data }, 'latest'] });
+        const need = BigInt(plan.amount);
+        if (BigInt(await read(plan.source.usdc, '0x70a08231' + pad(account))) < need) throw new Error('This wallet has less than ' + plan.sendAmount + ' USDC on ' + plan.source.name + '.');
+        const approved = BigInt(await read(plan.source.usdc, '0xdd62ed3e' + pad(account) + pad(plan.spender))) >= need;
+        if (!approved) {
+          say('Step 1 of 2: approve ' + plan.sendAmount + ' USDC in your wallet.');
+          await confirmed(eth, await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: plan.approve.to, data: plan.approve.data }] }));
+        }
+        say((approved ? '' : 'Step 2 of 2: ') + 'send ' + plan.sendAmount + ' USDC on ' + plan.source.name + ' in your wallet. The shop receives ' + plan.receiveAmount + '.');
+        const hash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: plan.burn.to, data: plan.burn.data }] });
+        follow(plan, hash);
+      } catch (e) {
+        say(e && e.code === 4001 ? 'Cancelled in your wallet.' : e && e.message ? e.message : 'The payment was not sent.');
+        go.disabled = false;
+        from.disabled = false;
+      }
+    });
+  }
 })();
 </script>
 </body>

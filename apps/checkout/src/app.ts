@@ -7,8 +7,8 @@
  * to pay and whether it is paid, and nothing else.
  */
 
-import { InvoiceError, NETWORKS, formatAmount, paymentLinks, qrSvg, type Gateway, type Invoice, type Network } from '@arctoolkit/pay';
-import { RateLimiter } from './guards';
+import { CCTP, CctpError, InvoiceError, NETWORKS, cctpFees, cctpPlan, cctpSource, cctpStatus, formatAmount, paymentLinks, qrSvg, type Gateway, type Invoice, type Network } from '@arctoolkit/pay';
+import { RateLimiter, TtlCache } from './guards';
 import { checkoutPage } from './page';
 
 export interface CheckoutOptions {
@@ -20,6 +20,10 @@ export interface CheckoutOptions {
   readonly publicUrl?: string | null;
   /** Public requests a minute per client (default 120: a payment page asks every two seconds). */
   readonly publicPerMinute?: number;
+  /** Offer payment from other chains through Circle's CCTP on address-mode USDC invoices (default true). */
+  readonly crossChain?: boolean;
+  /** For Circle's fee and message API. */
+  readonly fetch?: typeof fetch;
   readonly now?: () => number;
 }
 
@@ -50,6 +54,15 @@ export function createCheckout(options: CheckoutOptions): Checkout {
   if (options.apiKey.length < 24) throw new Error('the API key is at least 24 characters');
   const limiter = new RateLimiter(options.publicPerMinute ?? 120, undefined, options.now);
   const net = NETWORKS[options.network];
+  // Circle's answers are shared by every payer for a few seconds, so a busy page does not ask Circle each time.
+  const circle = new TtlCache(2_000, options.now);
+  const doFetch = options.fetch ?? fetch;
+  /** Cross-chain payment needs an invoice whose own address attributes whatever arrives (address mode), in USDC. */
+  const crossChainFor = (invoice: Invoice): boolean => options.crossChain !== false && invoice.mode === 'address' && invoice.currency === 'USDC';
+  const stillDue = (invoice: Invoice): bigint => {
+    const left = BigInt(invoice.due) - BigInt(invoice.received);
+    return left > 0n ? left : 0n;
+  };
 
   const linksOf = (invoice: Invoice) => paymentLinks({ network: invoice.network, currency: invoice.currency, to: invoice.address, units: BigInt(invoice.due) });
   const withLinks = (invoice: Invoice, origin: string) => ({ ...invoice, links: linksOf(invoice), checkoutUrl: `${origin}/pay/${invoice.id}` });
@@ -81,7 +94,8 @@ export function createCheckout(options: CheckoutOptions): Checkout {
       if (!invoice) return refuse(404, 'NOT_FOUND', 'No such invoice.');
       if (parts.length === 2) {
         const n = nonce();
-        const html = checkoutPage({ invoice, shopName: options.shopName, links: linksOf(invoice), explorer: net.explorer, testnet: options.network === 'testnet', nonce: n });
+        const sources = crossChainFor(invoice) ? CCTP[options.network].sources.map((s) => ({ key: s.key, name: s.name })) : null;
+        const html = checkoutPage({ invoice, shopName: options.shopName, links: linksOf(invoice), explorer: net.explorer, testnet: options.network === 'testnet', nonce: n, crossChain: sources });
         return new Response(html, {
           status: 200,
           headers: {
@@ -99,6 +113,27 @@ export function createCheckout(options: CheckoutOptions): Checkout {
         const links = linksOf(invoice);
         const kind = url.searchParams.get('kind') === 'token' || !links.native ? 'token' : 'native';
         return new Response(qrSvg(kind === 'native' ? links.native! : links.token), { status: 200, headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=3600', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'" } });
+      }
+      if (parts[2] === 'cctp' && (parts.length === 3 || (parts.length === 4 && parts[3] === 'status'))) {
+        if (!crossChainFor(invoice)) return refuse(409, 'CROSS_CHAIN_NOT_AVAILABLE', 'This invoice is paid on Arc only.');
+        const from = cctpSource(options.network, url.searchParams.get('from') ?? '');
+        if (!from) return refuse(400, 'INVALID_FIELD', `from is one of: ${CCTP[options.network].sources.map((s) => s.key).join(', ')}.`);
+        try {
+          if (parts.length === 4) {
+            // Progress of a payment already sent. For display only: the invoice is paid by the mint read on Arc.
+            const tx = url.searchParams.get('tx') ?? '';
+            if (!/^0x[0-9a-fA-F]{64}$/.test(tx)) return refuse(400, 'INVALID_FIELD', 'tx is a transaction hash.');
+            return json(200, await circle.get(`status:${from.key}:${tx.toLowerCase()}`, 3_000, () => cctpStatus(options.network, from, tx, { fetch: doFetch })));
+          }
+          if (invoice.status !== 'open') return refuse(409, 'INVOICE_NOT_OPEN', 'This invoice is no longer open.');
+          const units = stillDue(invoice);
+          if (units === 0n) return refuse(409, 'INVOICE_NOT_OPEN', 'Nothing is left to pay.');
+          const fee = await circle.get(`fees:${from.key}`, 20_000, () => cctpFees(options.network, from, { fetch: doFetch }));
+          return json(200, cctpPlan({ network: options.network, source: from, recipient: invoice.address, units, fee }));
+        } catch (error) {
+          if (error instanceof CctpError) return refuse(error.code === 'INVALID' ? 400 : 503, error.code, error.message);
+          throw error;
+        }
       }
       return refuse(404, 'NO_ROUTE', 'No such route.');
     }

@@ -47,7 +47,7 @@ A plain transfer carries no reference, so the gateway offers two ways to know wh
 | Mode | Setup | How | Good for |
 |---|---|---|---|
 | `amount` | One receiving address | Each open invoice asks for a slightly different amount: the requested amount plus a tag of 0.000001 to 0.009999. A payment of exactly that amount pays it | A shop that wants nothing more than an address |
-| `address` | The merchant's extended public key (`xpub`) | Each invoice gets its own address, derived from the key. Whatever arrives there counts toward that invoice | Payments that may not be exact: partial payments, exchanges that round, USDC arriving from another chain |
+| `address` | The merchant's extended public key (`xpub`) | Each invoice gets its own address, derived from the key. Whatever arrives there counts toward that invoice | Payments that may not be exact: partial payments, exchanges that round, USDC arriving from another chain ([CCTP](#paying-from-another-chain-cctp)) |
 
 In `address` mode only public keys are involved: the gateway can derive and watch the addresses, and cannot move anything. For an `xpub` of `m/44'/60'/0'/0`, invoice address *i* is the merchant wallet's account *i*. Because Arc's gas coin is USDC, money received at those addresses can be moved on without first sending them gas.
 
@@ -93,6 +93,29 @@ A delivery that fails is retried after 5 s, 30 s, 2 min, 10 min, 1 h and 6 h, th
 
 `paymentLinks({ network, currency, to, units })` returns ERC-681 links a wallet opens with everything filled in: `native` asks for USDC as Arc's native coin (18-decimal value), `token` asks for an ERC-20 transfer (USDC or EURC). `qrSvg(link)` draws one as an SVG.
 
+## Paying from another chain (CCTP)
+
+A payer whose USDC is on Base, Ethereum, Arbitrum, OP Mainnet, Polygon or Avalanche can pay an `address`-mode invoice without first moving money to Arc. Their own wallet sends two transactions on that chain: an approval, then a burn on Circle's TokenMessengerV2 naming the invoice's Arc address as the recipient, with the hook that asks Circle's Forwarding Service to mint it on Arc. Circle submits the mint, so nobody needs Arc gas and this package still holds no key.
+
+```ts
+import { cctpFees, cctpPlan, cctpSource, cctpStatus } from '@arctoolkit/pay';
+
+const base = cctpSource('mainnet', 'base')!;
+const fee = await cctpFees('mainnet', base);            // Circle's current fee for Base → Arc with forwarding
+const plan = cctpPlan({ network: 'mainnet', source: base, recipient: invoice.address, units: BigInt(invoice.due), fee });
+// plan.approve and plan.burn: { to, data } for the payer's wallet, in that order, on Base.
+// plan.sendAmount: what leaves the payer's wallet; plan.receiveAmount: what the invoice receives, at least.
+
+await cctpStatus('mainnet', base, burnTxHash);          // not_found → pending → attested → delivered (with the mint's hash)
+```
+
+- **What arrives.** The burn is the invoice's amount plus `maxFee`, which covers Circle's forwarding fee (its `high` estimate) and the protocol fee on the whole burned amount, rounded up. Circle takes at most `maxFee`, so the invoice receives at least its amount. On mainnet in November 2026 that was about 0.017 USDC per payment, plus 0 to 0.35 basis points for a fast transfer.
+- **Why address mode.** What arrives is not exact, so only an invoice with its own address can attribute it. A CCTP mint on Arc is logged by the system emitter like any other USDC movement (checked on mainnet), so the gateway credits it with no extra work.
+- **Status is for display.** An invoice is paid by the mint the gateway reads on Arc, never by Circle's status answer.
+- **Speed.** Fast transfers (the default) arrive once the source chain has soft finality; `speed: 'standard'` waits for hard finality and has no protocol fee.
+
+The addresses, domains and fee API were read from Circle's documentation and checked live: for each of the six source chains, Circle quotes forwarding to Arc, the USDC address answers `USDC`, and a dry run of the exact burn call on that chain's contract goes as far as the allowance check (`LIVE=1` tests).
+
 ## Following the chain
 
 `gateway.poll()` reads from the block it stopped at to the head; on a first start it begins at the head. Its position is saved, so after a restart it reads what it missed. A payment counted once is never counted again. `gateway.run(signal)` polls, expires and delivers webhooks every second, and saves what is left when the signal aborts. Arc blocks are final when made, so a payment is reported as soon as its block is read.
@@ -119,13 +142,14 @@ pnpm --filter @arctoolkit/pay test
 LIVE=1 pnpm --filter @arctoolkit/pay test     # reads Arc mainnet; never sends
 ```
 
-28 tests, plus 2 live tests that read a real ERC-20 transfer and a real native send on Arc mainnet.
+37 tests, plus 9 live tests: a real ERC-20 transfer, a real native send and a real CCTP mint read on Arc mainnet, and the CCTP route checked on each of the six source chains.
 
 ## What it does not do
 
 - No refunds, no fiat prices, no multi-currency conversion.
 - No payment from another chain in `amount` mode: a cross-chain transfer arrives with fees taken off, so its amount is not exact. `address` mode attributes it.
-- It was not run against a real payment to a gateway invoice; that needs a funded wallet (Arc testnet USDC comes from Circle's faucet).
+- No Solana source yet: CCTP supports it, but the payer's transactions are built differently.
+- It was not run against a real payment to a gateway invoice, from Arc or from another chain; that needs funded wallets (testnet USDC comes from Circle's faucet).
 
 ## Licence
 

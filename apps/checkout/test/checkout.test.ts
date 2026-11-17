@@ -1,5 +1,5 @@
 import type { EvmRpc } from '@arctoolkit/evm';
-import { Gateway, MemoryPayStore, type Payment } from '@arctoolkit/pay';
+import { CCTP, Gateway, MemoryPayStore, cctpSource, type Payment } from '@arctoolkit/pay';
 import { describe, expect, it } from 'vitest';
 import { createCheckout } from '../src/app';
 import { readSettings } from '../src/main';
@@ -9,14 +9,14 @@ const KEY = 'test-api-key-0123456789abcdef';
 // m/44'/60'/0'/0 of the public Hardhat test mnemonic ("test test … junk"): never funded.
 const XPUB = 'xpub6DyUKdwoLWmUJ4Tn9Bbsdtx7B5Ws18mEN19e5HT52ikE53FiUheSQXrZUNPovqfyKmw4579A1Mm3GXXKM39N64uooBfJ4tNAzFsEbodRTx4';
 
-function harness(over: { publicPerMinute?: number } = {}) {
+function harness(over: { publicPerMinute?: number; xpub?: boolean; fetch?: typeof fetch; crossChain?: boolean } = {}) {
   let now = 1_800_000_000_000;
   const rpc = { call: async () => { throw new Error('no chain in this test'); } } as EvmRpc;
-  const gateway = new Gateway({ network: 'testnet', rpc, store: new MemoryPayStore(), receive: { address: MERCHANT }, now: () => now });
-  const checkout = createCheckout({ gateway, network: 'testnet', apiKey: KEY, shopName: 'Coffee <&> Co', publicPerMinute: over.publicPerMinute, now: () => now });
+  const gateway = new Gateway({ network: 'testnet', rpc, store: new MemoryPayStore(), receive: { address: MERCHANT, ...(over.xpub ? { xpub: XPUB } : {}) }, now: () => now });
+  const checkout = createCheckout({ gateway, network: 'testnet', apiKey: KEY, shopName: 'Coffee <&> Co', publicPerMinute: over.publicPerMinute, fetch: over.fetch, crossChain: over.crossChain, now: () => now });
   const call = (method: string, path: string, body?: unknown, key: string | null = KEY, client = 'a') =>
     checkout.handle(new Request(`http://shop.test${path}`, { method, headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), 'content-type': 'application/json' }, ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}) }), client);
-  const json = async (response: Response) => (await response.json()) as { data?: Record<string, unknown> & { id: string; due: string; links: { native: string | null; token: string }; checkoutUrl: string }; error?: { code: string } };
+  const json = async (response: Response) => (await response.json()) as { data?: Record<string, unknown> & { id: string; due: string; address: string; links: { native: string | null; token: string }; checkoutUrl: string }; error?: { code: string } };
   return { gateway, checkout, call, json, tick: (ms: number) => (now += ms), at: () => now };
 }
 
@@ -109,6 +109,80 @@ describe('the payment page', () => {
   it('reports health without a key', async () => {
     const h = harness();
     expect(await (await h.call('GET', '/health', undefined, null)).json()).toEqual({ ok: true, network: 'testnet', cursor: null, modes: ['amount'] });
+  });
+});
+
+describe('paying from another chain', () => {
+  // Circle's answers, in the shapes its live API gave (November 2026).
+  const FEES = [
+    { finalityThreshold: 1000, minimumFee: 1.3, forwardFee: { low: 18831, med: 19403, high: 19899 } },
+    { finalityThreshold: 2000, minimumFee: 0, forwardFee: { low: 18831, med: 19403, high: 19899 } },
+  ];
+  const MINT = `0x${'cd'.repeat(32)}`;
+  function circle(over: { down?: boolean } = {}) {
+    const asked: string[] = [];
+    const fetchFake = (async (url: string | URL) => {
+      const text = String(url);
+      asked.push(text);
+      if (over.down) return new Response('unavailable', { status: 503 });
+      if (text.includes('/v2/burn/USDC/fees/6/26?forward=true')) return new Response(JSON.stringify(FEES), { status: 200 });
+      if (text.includes('/v2/messages/6?transactionHash=')) return new Response(JSON.stringify({ messages: [{ status: 'complete', destinationMintTxHash: MINT, decodedMessage: { destinationDomain: '26' } }] }), { status: 200 });
+      return new Response('{}', { status: 404 });
+    }) as unknown as typeof fetch;
+    return { fetchFake, asked };
+  }
+
+  it('offers it on address-mode USDC invoices only', async () => {
+    const h = harness({ xpub: true, fetch: circle().fetchFake });
+    const own = await h.json(await h.call('POST', '/v1/invoices', { amount: '10', mode: 'address' }));
+    const tagged = await h.json(await h.call('POST', '/v1/invoices', { amount: '10', mode: 'amount' }));
+    const eurc = await h.json(await h.call('POST', '/v1/invoices', { amount: '10', mode: 'address', currency: 'EURC' }));
+    const page = async (id: string) => (await h.call('GET', `/pay/${id}`, undefined, null)).text();
+    expect(await page(own.data!.id)).toContain('id="cross"');
+    expect(await page(own.data!.id)).toContain('Base Sepolia');
+    expect(await page(tagged.data!.id)).not.toContain('id="cross"');
+    expect(await page(eurc.data!.id)).not.toContain('id="cross"');
+    // An amount-mode invoice needs an exact amount, which a transfer with fees taken off cannot promise.
+    expect((await h.json(await h.call('GET', `/pay/${tagged.data!.id}/cctp?from=base`, undefined, null))).error?.code).toBe('CROSS_CHAIN_NOT_AVAILABLE');
+    const off = harness({ xpub: true, crossChain: false });
+    const offInvoice = await off.json(await off.call('POST', '/v1/invoices', { amount: '10', mode: 'address' }));
+    expect(await (await off.call('GET', `/pay/${offInvoice.data!.id}`, undefined, null)).text()).not.toContain('id="cross"');
+  });
+
+  it('prepares the wallet\'s two transactions from Circle\'s fee, for what is still due, asking Circle once', async () => {
+    const c = circle();
+    const h = harness({ xpub: true, fetch: c.fetchFake });
+    const { data } = await h.json(await h.call('POST', '/v1/invoices', { amount: '10', mode: 'address' }));
+    const plan = (await (await h.call('GET', `/pay/${data!.id}/cctp?from=base`, undefined, null)).json()) as { recipient: string; receive: string; sendAmount: string; spender: string; burn: { to: string; data: string }; approve: { to: string }; source: { chainId: number } };
+    expect(plan).toMatchObject({ recipient: data!.address, receive: '10000000', spender: CCTP.testnet.tokenMessenger, source: { chainId: 84532 } });
+    expect(plan.burn.to).toBe(CCTP.testnet.tokenMessenger);
+    expect(plan.approve.to).toBe(cctpSource('testnet', 'base')!.usdc);
+    expect(plan.burn.data).toContain(data!.address.slice(2).toLowerCase());
+    // Part paid on Arc already: only the rest is asked for.
+    await h.gateway.applyPayments([{ ...paid({ due: '4000000' }, h.at()), to: data!.address }]);
+    const rest = (await (await h.call('GET', `/pay/${data!.id}/cctp?from=base`, undefined, null)).json()) as { receive: string };
+    expect(rest.receive).toBe('6000000');
+    expect(c.asked.filter((u) => u.includes('/fees/'))).toHaveLength(1);
+    expect((await h.call('GET', `/pay/${data!.id}/cctp?from=solana`, undefined, null)).status).toBe(400);
+    await h.gateway.applyPayments([{ ...paid({ due: '6000000' }, h.at()), id: '0xrest:0', tx: '0xrest', to: data!.address }]);
+    expect((await h.json(await h.call('GET', `/pay/${data!.id}/cctp?from=base`, undefined, null))).error?.code).toBe('INVOICE_NOT_OPEN');
+  });
+
+  it('says so when Circle is not answering', async () => {
+    const h = harness({ xpub: true, fetch: circle({ down: true }).fetchFake });
+    const { data } = await h.json(await h.call('POST', '/v1/invoices', { amount: '10', mode: 'address' }));
+    const response = await h.call('GET', `/pay/${data!.id}/cctp?from=base`, undefined, null);
+    expect(response.status).toBe(503);
+    expect((await h.json(response)).error?.code).toBe('FEES_UNAVAILABLE');
+  });
+
+  it('reports a sent transfer\'s progress from Circle, without crediting anything on Circle\'s word', async () => {
+    const h = harness({ xpub: true, fetch: circle().fetchFake });
+    const { data } = await h.json(await h.call('POST', '/v1/invoices', { amount: '10', mode: 'address' }));
+    const status = await (await h.call('GET', `/pay/${data!.id}/cctp/status?from=base&tx=0x${'ab'.repeat(32)}`, undefined, null)).json();
+    expect(status).toEqual({ state: 'delivered', mintTx: MINT, delayReason: null });
+    expect(h.gateway.invoice(data!.id)!.status).toBe('open');
+    expect((await h.call('GET', `/pay/${data!.id}/cctp/status?from=base&tx=nope`, undefined, null)).status).toBe(400);
   });
 });
 

@@ -13,6 +13,7 @@
  *   STORE_PATH        default ./data/checkout.json
  *   PORT, HOST        default 8790, 127.0.0.1
  *   TRUST_PROXY       1 when exactly one reverse proxy of yours is in front
+ *   CROSS_CHAIN       0 to hide "pay from another chain" (default on, for address-mode USDC invoices)
  */
 
 import { createEvmRpc, chainId } from '@arctoolkit/evm';
@@ -47,6 +48,8 @@ export function readSettings(env: Readonly<Record<string, string | undefined>>) 
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('PORT is a whole number from 1 to 65535');
   const trust = get('TRUST_PROXY');
   if (trust !== undefined && trust !== '0' && trust !== '1') throw new Error('TRUST_PROXY is 1 or 0');
+  const cross = get('CROSS_CHAIN');
+  if (cross !== undefined && cross !== '0' && cross !== '1') throw new Error('CROSS_CHAIN is 1 or 0');
   const rpcUrl = get('ARC_RPC_URL') ?? NETWORKS[network as Network].rpc;
   if (!/^https?:\/\//.test(rpcUrl)) throw new Error('ARC_RPC_URL must start with http:// or https://');
   const publicUrl = get('PUBLIC_URL') ?? null;
@@ -63,6 +66,7 @@ export function readSettings(env: Readonly<Record<string, string | undefined>>) 
     port,
     host: get('HOST') ?? '127.0.0.1',
     trustProxy: trust === '1',
+    crossChain: cross !== '0',
   };
 }
 
@@ -92,7 +96,7 @@ async function main(): Promise<void> {
     log: (level, message, fields) => log(level, message, fields),
   });
   await gateway.load();
-  const checkout = createCheckout({ gateway, network: settings.network, apiKey: settings.apiKey, shopName: settings.shopName, publicUrl: settings.publicUrl });
+  const checkout = createCheckout({ gateway, network: settings.network, apiKey: settings.apiKey, shopName: settings.shopName, publicUrl: settings.publicUrl, crossChain: settings.crossChain });
 
   const stop = new AbortController();
   const server = createServer((req, res) => {

@@ -4,6 +4,8 @@ A self-hosted USDC and EURC checkout for [Arc](https://arc.io). The shop's serve
 
 The money goes straight from the customer's wallet to the shop's own address. The checkout holds no key and cannot move anything.
 
+A customer whose USDC is on Base, Ethereum, Arbitrum, OP Mainnet, Polygon or Avalanche can pay from there: the page asks their browser wallet to send it through Circle's CCTP, and Circle delivers it to the invoice's address on Arc.
+
 It is a thin server around [`@arctoolkit/pay`](../../packages/pay), which reads the chain, matches payments to invoices and signs the webhooks.
 
 ## Run it
@@ -72,6 +74,8 @@ Every API answer is JSON: `{ "data": … }` or `{ "error": { "code", "message" }
 | `GET /pay/{id}` | The payment page |
 | `GET /pay/{id}/status` | `status`, `dueAmount`, `received`, `expiresAt`, `late`, `lastTx`. Nothing about the order or the payer |
 | `GET /pay/{id}/qr.svg?kind=native\|token` | The QR code |
+| `GET /pay/{id}/cctp?from=base` | For paying from another chain: the two transactions for the customer's wallet, built from Circle's current fee for what is still due. Address-mode USDC invoices only. `from` is `base`, `ethereum`, `arbitrum`, `optimism`, `polygon` or `avalanche` |
+| `GET /pay/{id}/cctp/status?from=base&tx=0x…` | Where a sent transfer stands at Circle: `not_found`, `pending`, `attested` or `delivered`. For the page to show progress; the invoice is paid by the mint the checkout reads on Arc |
 | `GET /health` | `{ ok, network, cursor, modes }` |
 
 Anyone who has an invoice's id can see what is due and whether it is paid. Ids are 96 random bits.
@@ -84,6 +88,8 @@ Anyone who has an invoice's id can see what is due and whether it is paid. Ids a
 | 401 | `UNAUTHORIZED` | No API key, or the wrong one |
 | 404 | `NOT_FOUND`, `NO_ROUTE` | No such invoice or route |
 | 409 | `NO_FREE_TAG` | Every tag for that amount is taken by an open invoice: use `address` mode, or wait for some to expire |
+| 409 | `CROSS_CHAIN_NOT_AVAILABLE`, `INVOICE_NOT_OPEN` | The invoice is paid on Arc only (amount mode, EURC, or `CROSS_CHAIN=0`), or it is no longer open |
+| 503 | `FEES_UNAVAILABLE`, `STATUS_UNAVAILABLE` | Circle's API did not answer, or quoted no forwarding for that route |
 | 413 | `TOO_LARGE` | Bodies are at most 16 KB |
 | 429 | `RATE_LIMITED` | Public routes: 120 requests a minute per client; `Retry-After` says how long |
 | 500 | `FAILED` | Anything else. The message is general on purpose |
@@ -103,6 +109,7 @@ Anyone who has an invoice's id can see what is due and whether it is paid. Ids a
 | `STORE_PATH` | `./data/checkout.json` | Invoices, the chain position, undelivered webhooks |
 | `PORT`, `HOST` | `8790`, `127.0.0.1` | Where it listens |
 | `TRUST_PROXY` | unset | `1` when exactly one reverse proxy of yours is in front; clients are then counted by the address it appended to `X-Forwarded-For` |
+| `CROSS_CHAIN` | `1` | `0` hides "pay from another chain". It is offered only on address-mode USDC invoices, so it also needs `RECEIVE_XPUB` |
 
 At least one of `RECEIVE_ADDRESS` and `RECEIVE_XPUB` is required. A setting that is missing or malformed stops the server at start.
 
@@ -117,13 +124,23 @@ At least one of `RECEIVE_ADDRESS` and `RECEIVE_XPUB` is required. A setting that
 
 One HTML document with its CSS and one small script inline: no outside font, image or script, so it loads fast on a phone and its content security policy allows nothing else. It follows the system's light or dark setting, asks for the status every two seconds, and links to the transaction on the Arc explorer once paid. A testnet invoice says "testnet" beside the shop's name.
 
+On an address-mode USDC invoice the page also offers **USDC on another chain?** The customer picks the chain and presses "Pay with wallet". The page then uses the browser wallet (a wallet extension, or the browser inside a wallet app) to:
+
+1. connect, and switch to that chain;
+2. check the USDC balance there, and say so if it is short;
+3. ask for an approval, unless one is already in place;
+4. ask for the transfer: the invoice's amount plus Circle's fee, shown before the wallet opens;
+5. follow it at Circle ("confirmed on Base… bringing it to Arc…") until the invoice turns to paid.
+
+The wallet signs and sends; the checkout only builds the two transactions. Walking away or rejecting at any step leaves nothing half done: the approval alone moves no money.
+
 ## Tests
 
 ```
 pnpm --filter @arctoolkit/checkout test
 ```
 
-9 tests call the server as a function from `Request` to `Response`. The server was also run against Arc testnet: it checked the chain id, followed new blocks, created an invoice, and served the page, its QR code and its status, in light and dark mode on a phone-sized screen. No payment was sent to it; that needs faucet USDC in a wallet.
+13 tests call the server as a function from `Request` to `Response`, with Circle's API answered from recorded responses. The server was also run against Arc testnet: it checked the chain id, followed new blocks, created invoices in both modes, and served the page, its QR code and its status, in light and dark mode on a phone-sized screen. "Pay with wallet" was driven in that page with a stand-in wallet and Circle's real testnet fees: it switched to Base Sepolia, checked balance and allowance, and asked for exactly the approval and transfer the server planned; no wallet, a cancelled request and a short balance each gave their message. No real payment was sent; that needs faucet USDC in a wallet.
 
 ## Licence
 
