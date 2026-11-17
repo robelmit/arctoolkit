@@ -8,7 +8,8 @@ A shop runs one small server. It creates invoices, shows customers a payment pag
 |---|---|
 | [`@arctoolkit/pay`](packages/pay) | The library: invoices, payment matching, webhooks, payment links and QR codes |
 | [`@arctoolkit/evm`](packages/evm) | A small JSON-RPC client with retries, call pacing and log range splitting, and the Arc network constants |
-| [`apps/checkout`](apps/checkout) | The checkout server: a merchant API, the payment page, Docker image |
+| [`apps/checkout`](apps/checkout) | The checkout server: a merchant API, the payment page and the shop's dashboard, Docker image |
+| [`apps/checkout-web`](apps/checkout-web) | The two pages, in React with shadcn/ui |
 | [`examples/webhook-receiver`](examples/webhook-receiver) | The shop's side: checks each webhook and handles it once |
 
 ## Why another checkout
@@ -25,10 +26,11 @@ And a customer does not need USDC on Arc already. With USDC on Base, Ethereum, A
 git clone <this repository> && cd arctoolkit
 pnpm install
 cp apps/checkout/.env.example apps/checkout/.env    # ARC_NETWORK=testnet, your address, an API key
+pnpm build
 pnpm --filter @arctoolkit/checkout start
 ```
 
-Then create an invoice and open its `checkoutUrl`; the [checkout README](apps/checkout/README.md) has the requests. To use the library inside your own server instead, start from the [pay README](packages/pay/README.md).
+Then open `http://127.0.0.1:8790/dashboard`, enter the API key, and create an invoice; or create one from your own server with the API in the [checkout README](apps/checkout/README.md). To use the library inside your own server instead, start from the [pay README](packages/pay/README.md).
 
 ## Working on it
 

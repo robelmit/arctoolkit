@@ -4,18 +4,24 @@
  *
  * Merchant routes need the API key as a bearer token. The payment page, its
  * status and its QR code are public: anyone with an invoice's id can see what
- * to pay and whether it is paid, and nothing else.
+ * to pay and whether it is paid, and nothing else. The dashboard page is public
+ * too, but shows nothing until the merchant enters the key.
+ *
+ * The pages are React with shadcn/ui, built by `@arctoolkit/checkout-web` and
+ * handed in as a bundle (see `web.ts`).
  */
 
 import { CCTP, CctpError, InvoiceError, NETWORKS, cctpFees, cctpPlan, cctpSource, cctpStatus, formatAmount, paymentLinks, qrSvg, type Gateway, type Invoice, type Network } from '@arctoolkit/pay';
 import { RateLimiter, TtlCache } from './guards';
-import { checkoutPage } from './page';
+import { renderPage, type WebBundle } from './web';
 
 export interface CheckoutOptions {
   readonly gateway: Gateway;
   readonly network: Network;
   readonly apiKey: string;
   readonly shopName: string;
+  /** The built pages (`loadWeb`). */
+  readonly web: WebBundle;
   /** Where this server is reached, for the checkout links it hands out (default: the request's own origin). */
   readonly publicUrl?: string | null;
   /** Public requests a minute per client (default 120: a payment page asks every two seconds). */
@@ -43,11 +49,19 @@ function sameText(a: string, b: string): boolean {
   return diff === 0;
 }
 
-const nonce = (): string => {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Buffer.from(bytes).toString('base64');
-};
+/**
+ * For the pages: scripts, styles, fonts and images from this server only. Styles may also be set inline, which the
+ * components do for positions and animations; no inline script is ever allowed.
+ */
+const PAGE_HEADERS = {
+  'content-type': 'text/html; charset=utf-8',
+  'cache-control': 'no-store',
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'x-frame-options': 'DENY',
+  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+} as const;
+const page = (html: string): Response => new Response(html, { status: 200, headers: PAGE_HEADERS });
 
 export function createCheckout(options: CheckoutOptions): Checkout {
   const { gateway } = options;
@@ -86,6 +100,16 @@ export function createCheckout(options: CheckoutOptions): Checkout {
 
     if (parts.length === 1 && parts[0] === 'health' && method === 'GET') return json(200, { ok: true, network: options.network, cursor: gateway.cursor, modes: gateway.modes });
 
+    // The pages' own files: hashed scripts, styles and fonts, and the icon. Served from memory by exact name.
+    if (method === 'GET' && (parts[0] === 'assets' || parts.length === 1)) {
+      const file = options.web.files.get(parts.join('/'));
+      if (file) return new Response(file.body, { status: 200, headers: { 'content-type': file.type, 'cache-control': file.immutable ? 'public, max-age=31536000, immutable' : 'public, max-age=86400', 'x-content-type-options': 'nosniff' } });
+    }
+    if (method === 'GET' && parts.length === 0) return new Response(null, { status: 302, headers: { location: '/dashboard' } });
+    if (method === 'GET' && parts.length === 1 && parts[0] === 'dashboard') {
+      return page(renderPage(options.web.dashboard, { shopName: options.shopName, network: options.network, explorer: net.explorer }, `${options.shopName} · Dashboard`));
+    }
+
     // The public side: the payment page, its status and its QR code.
     if (parts[0] === 'pay' && parts.length >= 2 && method === 'GET') {
       const retryAfter = limiter.take(client);
@@ -93,20 +117,15 @@ export function createCheckout(options: CheckoutOptions): Checkout {
       const invoice = /^inv_[0-9a-f]{24}$/.test(parts[1]!) ? gateway.invoice(parts[1]!) : null;
       if (!invoice) return refuse(404, 'NOT_FOUND', 'No such invoice.');
       if (parts.length === 2) {
-        const n = nonce();
-        const sources = crossChainFor(invoice) ? CCTP[options.network].sources.map((s) => ({ key: s.key, name: s.name })) : null;
-        const html = checkoutPage({ invoice, shopName: options.shopName, links: linksOf(invoice), explorer: net.explorer, testnet: options.network === 'testnet', nonce: n, crossChain: sources });
-        return new Response(html, {
-          status: 200,
-          headers: {
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store',
-            'x-content-type-options': 'nosniff',
-            'referrer-policy': 'no-referrer',
-            'x-frame-options': 'DENY',
-            'content-security-policy': `default-src 'none'; script-src 'nonce-${n}'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
-          },
-        });
+        const data = {
+          shopName: options.shopName,
+          network: options.network,
+          explorer: net.explorer,
+          invoice: { ...publicStatus(invoice), mode: invoice.mode, amount: invoice.amount, description: invoice.description, orderId: invoice.orderId },
+          links: linksOf(invoice),
+          crossChain: crossChainFor(invoice) ? CCTP[options.network].sources.map((s) => ({ key: s.key, name: s.name })) : null,
+        };
+        return page(renderPage(options.web.pay, data, `Pay ${options.shopName}`));
       }
       if (parts.length === 3 && parts[2] === 'status') return json(200, publicStatus(invoice));
       if (parts.length === 3 && parts[2] === 'qr.svg') {

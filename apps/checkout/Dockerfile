@@ -9,7 +9,8 @@ WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json turbo.json ./
 COPY packages packages
 COPY apps/checkout apps/checkout
-# Installs the checkout with the workspace packages it uses, then builds those packages.
+COPY apps/checkout-web apps/checkout-web
+# Installs the checkout with the workspace packages it uses, then builds those packages (the pages among them).
 RUN pnpm install --frozen-lockfile --filter "@arctoolkit/checkout..." \
  && pnpm --filter "@arctoolkit/checkout^..." build
 WORKDIR /repo/apps/checkout

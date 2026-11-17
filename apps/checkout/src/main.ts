@@ -14,12 +14,14 @@
  *   PORT, HOST        default 8790, 127.0.0.1
  *   TRUST_PROXY       1 when exactly one reverse proxy of yours is in front
  *   CROSS_CHAIN       0 to hide "pay from another chain" (default on, for address-mode USDC invoices)
+ *   WEB_DIR           the built pages (default: @arctoolkit/checkout-web's dist folder)
  */
 
 import { createEvmRpc, chainId } from '@arctoolkit/evm';
 import { AddressDeriver, Gateway, JsonFilePayStore, NETWORKS, type Network } from '@arctoolkit/pay';
 import { createServer, type IncomingMessage } from 'node:http';
 import { createCheckout } from './app';
+import { defaultWebDir, loadWeb } from './web';
 
 const log = (level: string, message: string, fields: Record<string, unknown> = {}): void => console.error(JSON.stringify({ at: new Date().toISOString(), level, message, ...fields }));
 
@@ -67,6 +69,7 @@ export function readSettings(env: Readonly<Record<string, string | undefined>>) 
     host: get('HOST') ?? '127.0.0.1',
     trustProxy: trust === '1',
     crossChain: cross !== '0',
+    webDir: get('WEB_DIR') ?? null,
   };
 }
 
@@ -82,6 +85,7 @@ function clientOf(req: IncomingMessage, trustProxy: boolean): string {
 
 async function main(): Promise<void> {
   const settings = readSettings(process.env);
+  const web = loadWeb(settings.webDir ?? defaultWebDir());
   const rpc = createEvmRpc({ url: settings.rpcUrl });
   const expected = NETWORKS[settings.network].chainId;
   const id = await chainId(rpc);
@@ -96,7 +100,7 @@ async function main(): Promise<void> {
     log: (level, message, fields) => log(level, message, fields),
   });
   await gateway.load();
-  const checkout = createCheckout({ gateway, network: settings.network, apiKey: settings.apiKey, shopName: settings.shopName, publicUrl: settings.publicUrl, crossChain: settings.crossChain });
+  const checkout = createCheckout({ gateway, network: settings.network, apiKey: settings.apiKey, shopName: settings.shopName, publicUrl: settings.publicUrl, crossChain: settings.crossChain, web });
 
   const stop = new AbortController();
   const server = createServer((req, res) => {

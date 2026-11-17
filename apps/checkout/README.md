@@ -6,15 +6,18 @@ The money goes straight from the customer's wallet to the shop's own address. Th
 
 A customer whose USDC is on Base, Ethereum, Arbitrum, OP Mainnet, Polygon or Avalanche can pay from there: the page asks their browser wallet to send it through Circle's CCTP, and Circle delivers it to the invoice's address on Arc.
 
-It is a thin server around [`@arctoolkit/pay`](../../packages/pay), which reads the chain, matches payments to invoices and signs the webhooks.
+It is a thin server around [`@arctoolkit/pay`](../../packages/pay), which reads the chain, matches payments to invoices and signs the webhooks. Its two pages, the customer's payment page and the shop's dashboard, are React with [shadcn/ui](https://ui.shadcn.com), in [`apps/checkout-web`](../checkout-web).
 
 ## Run it
 
 ```
 cp apps/checkout/.env.example apps/checkout/.env    # fill it in
 pnpm install
+pnpm build                                          # builds the pages too
 pnpm --filter @arctoolkit/checkout start
 ```
+
+Then open `http://127.0.0.1:8790/dashboard`, enter the API key, and press "New invoice".
 
 Or with Docker, from the repository root:
 
@@ -77,6 +80,8 @@ Every API answer is JSON: `{ "data": … }` or `{ "error": { "code", "message" }
 | `GET /pay/{id}/cctp?from=base` | For paying from another chain: the two transactions for the customer's wallet, built from Circle's current fee for what is still due. Address-mode USDC invoices only. `from` is `base`, `ethereum`, `arbitrum`, `optimism`, `polygon` or `avalanche` |
 | `GET /pay/{id}/cctp/status?from=base&tx=0x…` | Where a sent transfer stands at Circle: `not_found`, `pending`, `attested` or `delivered`. For the page to show progress; the invoice is paid by the mint the checkout reads on Arc |
 | `GET /health` | `{ ok, network, cursor, modes }` |
+| `GET /dashboard` | The shop's dashboard. The page is public; it shows nothing until the API key is entered, and then calls the `/v1` routes with it |
+| `GET /assets/…`, `GET /favicon.svg` | The pages' scripts, styles and fonts |
 
 Anyone who has an invoice's id can see what is due and whether it is paid. Ids are 96 random bits.
 
@@ -110,21 +115,26 @@ Anyone who has an invoice's id can see what is due and whether it is paid. Ids a
 | `PORT`, `HOST` | `8790`, `127.0.0.1` | Where it listens |
 | `TRUST_PROXY` | unset | `1` when exactly one reverse proxy of yours is in front; clients are then counted by the address it appended to `X-Forwarded-For` |
 | `CROSS_CHAIN` | `1` | `0` hides "pay from another chain". It is offered only on address-mode USDC invoices, so it also needs `RECEIVE_XPUB` |
+| `WEB_DIR` | `apps/checkout-web/dist` | The built pages, read once at start. A missing or foreign build stops the server with a message |
 
 At least one of `RECEIVE_ADDRESS` and `RECEIVE_XPUB` is required. A setting that is missing or malformed stops the server at start.
 
 ## In production
 
 - Put it behind HTTPS (a reverse proxy) and set `PUBLIC_URL` and `TRUST_PROXY=1`.
-- Keep the merchant routes off the public internet if you can; only `/pay/*` needs to be reachable by customers.
+- Keep the merchant routes and the dashboard off the public internet if you can; only `/pay/*`, `/assets/*` and `/favicon.svg` need to be reachable by customers.
 - Back up `STORE_PATH`. Losing it loses the open invoices, not the money: payments are on chain and the money is already in your wallet.
 - One process per store file.
 
-## The payment page
+## The pages
 
-One HTML document with its CSS and one small script inline: no outside font, image or script, so it loads fast on a phone and its content security policy allows nothing else. It follows the system's light or dark setting, asks for the status every two seconds, and links to the transaction on the Arc explorer once paid. A testnet invoice says "testnet" beside the shop's name.
+Both are built from shadcn/ui components (Radix primitives, Tailwind, Geist, Lucide icons) and served from this server alone: no outside script, font or image. The server writes each page's data into it as JSON, never as script, so the content security policy runs scripts from this server only. Both follow the system's light or dark setting and are laid out for a phone first.
 
-On an address-mode USDC invoice the page also offers **USDC on another chain?** The customer picks the chain and presses "Pay with wallet". The page then uses the browser wallet (a wallet extension, or the browser inside a wallet app) to:
+**The payment page** shows the shop, the amount with every digit, a live countdown, the QR code, "Open in wallet", copy buttons for the address and the amount, and the status, asked for every two seconds. Once paid it turns into a receipt with a link to the transaction on the Arc explorer; an expired invoice says to ask for a new one.
+
+**The dashboard** asks for the API key, keeps it in that browser tab only, and shows: whether the server is following the chain (and at which block), open invoices, what was received, payments that need a person's review, and webhooks still waiting. "New invoice" opens a short form and then the QR code and link to hand the customer. The lists refresh every five seconds.
+
+On an address-mode USDC invoice the payment page also offers **From another chain**. The customer picks the chain and sees what leaves their wallet, Circle's fee and what the shop receives, at Circle's current price. "Pay" then uses the browser wallet (a wallet extension, or the browser inside a wallet app) to:
 
 1. connect, and switch to that chain;
 2. check the USDC balance there, and say so if it is short;
@@ -140,7 +150,7 @@ The wallet signs and sends; the checkout only builds the two transactions. Walki
 pnpm --filter @arctoolkit/checkout test
 ```
 
-13 tests call the server as a function from `Request` to `Response`, with Circle's API answered from recorded responses. The server was also run against Arc testnet: it checked the chain id, followed new blocks, created invoices in both modes, and served the page, its QR code and its status, in light and dark mode on a phone-sized screen. "Pay with wallet" was driven in that page with a stand-in wallet and Circle's real testnet fees: it switched to Base Sepolia, checked balance and allowance, and asked for exactly the approval and transfer the server planned; no wallet, a cancelled request and a short balance each gave their message. No real payment was sent; that needs faucet USDC in a wallet.
+16 tests call the server as a function from `Request` to `Response`, with Circle's API answered from recorded responses and a stand-in for the built pages; 6 more in `checkout-web` cover the wallet flow and the formatting. The server was also run against Arc testnet and both pages driven in a browser, on a phone and a desktop screen, in light and dark mode, with no console errors: invoices in both modes, the QR code, the countdown, a wrong API key refused, an invoice created from the dashboard. "Pay" on another chain was driven with a stand-in wallet and Circle's real testnet fees: it switched to Base Sepolia, checked balance and allowance, and asked for exactly the approval and transfer the server planned. No real payment was sent; that needs faucet USDC in a wallet.
 
 ## Licence
 
