@@ -63,7 +63,13 @@ export class InvoiceError extends Error {
 /** The largest tag added to an `amount`-mode invoice, in 6-decimal units: 0.009999 of the currency. */
 export const MAX_TAG = 9_999;
 const SEEN_KEPT = 100_000;
+/** Trimmed in batches, so the list is not cut on every payment. */
+const SEEN_SLACK = 10_000;
 const UNMATCHED_KEPT = 1_000;
+/** When only the block position moved, it is saved at most this often. Re-reading a few seconds of blocks after a crash is harmless: counted payments are remembered. */
+const CURSOR_SAVE_MS = 10_000;
+/** Old invoices are dropped at most this often. */
+const PRUNE_EVERY_MS = 60_000;
 const MAX_TEXT = 500;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
@@ -82,13 +88,20 @@ const randomTag = (): number => {
 export class Gateway {
   private state: PayState = emptyState();
   private readonly byId = new Map<string, Invoice>();
-  private readonly byAddress = new Map<string, Invoice[]>();
+  /** Address-mode invoices by their own address: one each. */
+  private readonly byAddress = new Map<string, Invoice>();
+  /** Amount-mode invoices by `currency:due`, and by `currency:units` (the amount before the tag). */
+  private readonly byDue = new Map<string, Invoice[]>();
+  private readonly byUnits = new Map<string, Invoice[]>();
   private seen = new Set<string>();
   private readonly deriver: AddressDeriver | null;
   private readonly fixedAddress: string | null;
   private readonly now: () => number;
   private loaded = false;
   private queue: Promise<unknown> = Promise.resolve();
+  private savedAt = -Infinity;
+  private unsaved = false;
+  private prunedAt = -Infinity;
 
   constructor(private readonly options: GatewayOptions) {
     this.now = options.now ?? Date.now;
@@ -109,23 +122,54 @@ export class Gateway {
 
   private index(invoice: Invoice): void {
     this.byId.set(invoice.id, invoice);
-    const list = this.byAddress.get(invoice.address) ?? [];
-    if (!list.includes(invoice)) list.push(invoice);
-    this.byAddress.set(invoice.address, list);
+    if (invoice.mode === 'address') {
+      this.byAddress.set(invoice.address, invoice);
+      return;
+    }
+    for (const [map, key] of [[this.byDue, `${invoice.currency}:${invoice.due}`], [this.byUnits, `${invoice.currency}:${invoice.units}`]] as const) {
+      const list = map.get(key);
+      if (list) list.push(invoice);
+      else map.set(key, [invoice]);
+    }
+  }
+
+  private reindex(): void {
+    this.byId.clear();
+    this.byAddress.clear();
+    this.byDue.clear();
+    this.byUnits.clear();
+    for (const invoice of this.state.invoices) this.index(invoice);
   }
 
   async load(): Promise<void> {
     if (this.loaded) return;
     const saved = await this.options.store.load();
     this.state = saved ?? emptyState();
-    for (const invoice of this.state.invoices) this.index(invoice);
+    this.reindex();
     this.seen = new Set(this.state.seen);
     this.loaded = true;
   }
 
   private async save(): Promise<void> {
-    this.state.seen = [...this.seen].slice(-SEEN_KEPT);
+    this.unsaved = false;
+    this.savedAt = this.now();
     await this.options.store.save(this.state);
+  }
+
+  /** Remembers a counted payment, forgetting the oldest past `SEEN_KEPT`. */
+  private remember(id: string): void {
+    this.seen.add(id);
+    this.state.seen.push(id);
+    if (this.state.seen.length > SEEN_KEPT + SEEN_SLACK) {
+      for (const old of this.state.seen.splice(0, this.state.seen.length - SEEN_KEPT)) this.seen.delete(old);
+    }
+  }
+
+  /** Saves anything not yet saved. `run` calls it when it stops. */
+  flush(): Promise<void> {
+    return this.serial(async () => {
+      if (this.loaded && this.unsaved) await this.save();
+    });
   }
 
   private say(level: 'info' | 'warn', message: string, fields?: Record<string, unknown>): void {
@@ -190,25 +234,27 @@ export class Gateway {
       let due = units;
       if (mode === 'address') {
         if (!this.deriver) throw new InvoiceError('MODE_NOT_SET_UP', 'address mode needs the merchant\'s extended public key');
-        addressIndex = this.state.nextIndex;
-        address = this.deriver.address(addressIndex);
-        this.state.nextIndex += 1;
+        // A shop whose receiving address is one of its key's own accounts (often account 0) must not hand that
+        // address to an invoice: payments to it are matched by amount. Skip it, and any address already given.
+        let index = this.state.nextIndex;
+        let derived = this.deriver.address(index);
+        while (derived === this.fixedAddress || this.byAddress.has(derived)) derived = this.deriver.address((index += 1));
+        addressIndex = index;
+        address = derived;
+        this.state.nextIndex = index + 1;
       } else if (mode === 'amount') {
         if (!this.fixedAddress) throw new InvoiceError('MODE_NOT_SET_UP', 'amount mode needs a receiving address');
         address = this.fixedAddress;
         // The tag must not be in use by an invoice a payment could still be meant for.
         const window = (this.options.lateWindowSeconds ?? 86_400) * 1000;
-        const taken = new Set(
-          (this.byAddress.get(address) ?? [])
-            .filter((i) => i.mode === 'amount' && i.currency === currency && (i.status === 'open' || (i.status === 'expired' && now - i.expiresAt < window)))
-            .map((i) => i.due),
-        );
+        const free = (candidate: number): boolean =>
+          !(this.byDue.get(`${currency}:${units + BigInt(candidate)}`) ?? []).some((i) => i.status === 'open' || (i.status === 'expired' && now - i.expiresAt < window));
         let tag = 0;
         for (let attempt = 0; attempt < 64 && tag === 0; attempt += 1) {
           const candidate = randomTag();
-          if (!taken.has((units + BigInt(candidate)).toString())) tag = candidate;
+          if (free(candidate)) tag = candidate;
         }
-        for (let candidate = 1; candidate <= MAX_TAG && tag === 0; candidate += 1) if (!taken.has((units + BigInt(candidate)).toString())) tag = candidate;
+        for (let candidate = 1; candidate <= MAX_TAG && tag === 0; candidate += 1) if (free(candidate)) tag = candidate;
         if (tag === 0) throw new InvoiceError('NO_FREE_TAG', `every tag for ${formatAmount(units)} ${currency} is in use; use address mode for this many open invoices of one amount`);
         due = units + BigInt(tag);
       } else {
@@ -267,16 +313,15 @@ export class Gateway {
 
   /** Decides which invoice a payment pays. Never guesses: a payment it cannot place is recorded as unmatched. */
   private place(payment: Payment): void {
-    const candidates = (this.byAddress.get(payment.to) ?? []).filter((i) => i.currency === payment.currency);
     if (payment.to !== this.fixedAddress) {
-      // A derived address belongs to exactly one invoice: whatever arrives there is that invoice's.
-      const owner = candidates.find((i) => i.mode === 'address');
-      if (owner) this.credit(owner, payment);
-      else this.unmatchedPayment(payment, 'no_invoice_with_this_amount', []);
+      // A derived address belongs to exactly one invoice: whatever arrives there in its currency is that invoice's.
+      const owner = this.byAddress.get(payment.to);
+      if (owner && owner.currency === payment.currency) this.credit(owner, payment);
+      else this.unmatchedPayment(payment, 'no_invoice_with_this_amount', owner ? [owner.id] : []);
       return;
     }
     const window = (this.options.lateWindowSeconds ?? 86_400) * 1000;
-    const exact = candidates.filter((i) => i.mode === 'amount' && i.due === payment.units);
+    const exact = this.byDue.get(`${payment.currency}:${payment.units}`) ?? [];
     const open = exact.filter((i) => i.status === 'open');
     const recent = exact.filter((i) => i.status === 'expired' && payment.at - i.expiresAt < window);
     const pick = open.length > 0 ? open : recent;
@@ -285,7 +330,7 @@ export class Gateway {
     const paid = exact.filter((i) => i.status === 'paid').map((i) => i.id);
     if (paid.length > 0) return this.unmatchedPayment(payment, 'invoice_already_paid', paid);
     // A payment without its tag (a wallet or an exchange that rounded it): name the open invoices of that amount.
-    const hints = candidates.filter((i) => i.mode === 'amount' && i.status === 'open' && i.units === payment.units).map((i) => i.id);
+    const hints = (this.byUnits.get(`${payment.currency}:${payment.units}`) ?? []).filter((i) => i.status === 'open').map((i) => i.id);
     this.unmatchedPayment(payment, 'no_invoice_with_this_amount', hints);
   }
 
@@ -296,7 +341,7 @@ export class Gateway {
       let applied = 0;
       for (const payment of payments) {
         if (this.seen.has(payment.id)) continue;
-        this.seen.add(payment.id);
+        this.remember(payment.id);
         this.place(payment);
         applied += 1;
       }
@@ -318,13 +363,12 @@ export class Gateway {
           expired += 1;
         }
       }
-      const cutoff = now - (this.options.retentionDays ?? 90) * 86_400_000;
       const before = this.state.invoices.length;
-      this.state.invoices = this.state.invoices.filter((i) => i.status === 'open' || Math.max(i.expiresAt, i.paidAt ?? 0) > cutoff);
-      if (this.state.invoices.length !== before) {
-        this.byId.clear();
-        this.byAddress.clear();
-        for (const invoice of this.state.invoices) this.index(invoice);
+      if (now - this.prunedAt >= PRUNE_EVERY_MS) {
+        this.prunedAt = now;
+        const cutoff = now - (this.options.retentionDays ?? 90) * 86_400_000;
+        this.state.invoices = this.state.invoices.filter((i) => i.status === 'open' || Math.max(i.expiresAt, i.paidAt ?? 0) > cutoff);
+        if (this.state.invoices.length !== before) this.reindex();
       }
       if (expired > 0 || this.state.invoices.length !== before) await this.save();
       return expired;
@@ -343,7 +387,8 @@ export class Gateway {
     await this.applyPayments(payments);
     await this.serial(async () => {
       this.state.cursor = to;
-      await this.save();
+      if (this.now() - this.savedAt >= CURSOR_SAVE_MS) await this.save();
+      else this.unsaved = true;
     });
     return payments.length;
   }
@@ -396,6 +441,7 @@ export class Gateway {
         signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
       });
     }
+    await this.flush();
   }
 
   /** The block the gateway has read up to. */

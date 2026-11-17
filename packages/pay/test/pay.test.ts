@@ -28,6 +28,8 @@ import {
   signWebhook,
   verifyWebhook,
   type GatewayEvent,
+  type PayState,
+  type PayStore,
   type Payment,
 } from '../src';
 
@@ -156,7 +158,14 @@ describe('reading a payment from a log', () => {
 
 const payment = (over: Partial<Payment> = {}): Payment => ({ id: `0x${Math.random().toString(16).slice(2)}:0`, tx: '0xtx', block: 100, at: 1_800_000_000_000, from: PAYER, to: MERCHANT, currency: 'USDC', units: '25000000', dust: '0', ...over });
 
-function gatewayOf(over: { xpub?: boolean; address?: boolean; webhook?: boolean; fetch?: typeof fetch; store?: MemoryPayStore; rpc?: EvmRpc } = {}) {
+/** A store that counts its saves. */
+function countingStore() {
+  const inner = new MemoryPayStore();
+  const counted = { saves: 0, load: () => inner.load(), save: (state: PayState) => ((counted.saves += 1), inner.save(state)) };
+  return counted;
+}
+
+function gatewayOf(over: { xpub?: boolean; address?: boolean | string; webhook?: boolean; fetch?: typeof fetch; store?: PayStore; rpc?: EvmRpc; retentionDays?: number } = {}) {
   let now = 1_800_000_000_000;
   const events: GatewayEvent[] = [];
   const store = over.store ?? new MemoryPayStore();
@@ -164,8 +173,9 @@ function gatewayOf(over: { xpub?: boolean; address?: boolean; webhook?: boolean;
     network: 'mainnet',
     rpc: over.rpc ?? ({ call: async () => { throw new Error('no chain in this test'); } } as EvmRpc),
     store,
-    receive: { ...(over.address === false ? {} : { address: MERCHANT }), ...(over.xpub ? { xpub: XPUB } : {}) },
+    receive: { ...(over.address === false ? {} : { address: typeof over.address === 'string' ? over.address : MERCHANT }), ...(over.xpub ? { xpub: XPUB } : {}) },
     webhook: over.webhook ? { url: 'https://merchant.example/hooks', secret: SECRET } : null,
+    ...(over.retentionDays !== undefined ? { retentionDays: over.retentionDays } : {}),
     fetch: over.fetch,
     now: () => now,
     onEvent: (event) => events.push(event),
@@ -221,12 +231,41 @@ describe('invoices', () => {
   });
 
   it('runs out of tags before it would reuse one, and says so', async () => {
-    const { gateway } = gatewayOf();
-    // Fill every tag of one amount directly, as a busy shop might over a day.
+    // A store that keeps nothing: this test is about the tags, not about writing ten thousand invoices.
+    const { gateway } = gatewayOf({ store: { load: async () => null, save: async () => {} } });
+    // Fill every tag of one amount, as a busy shop might over a day.
     await Promise.all(Array.from({ length: MAX_TAG }, () => gateway.createInvoice({ amount: '1' })));
     await expect(gateway.createInvoice({ amount: '1' })).rejects.toMatchObject({ code: 'NO_FREE_TAG' });
     expect((await gateway.createInvoice({ amount: '2' })).status).toBe('open');
-  }, 60_000);
+    // Another currency has its own tags.
+    expect((await gateway.createInvoice({ amount: '1', currency: 'EURC' })).status).toBe('open');
+  });
+
+  it('never gives an invoice the shop\'s own receiving address, when that address is one of its key\'s accounts', async () => {
+    // Account 0 of the key is also the shop's receiving address: a common setup with one wallet.
+    const { gateway } = gatewayOf({ xpub: true, address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266' });
+    const derived = await gateway.createInvoice({ amount: '10', mode: 'address' });
+    expect(derived).toMatchObject({ addressIndex: 1, address: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8' });
+    const tagged = await gateway.createInvoice({ amount: '10', mode: 'amount' });
+    expect(tagged.address).toBe('0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266');
+    await gateway.applyPayments([payment({ to: tagged.address, units: tagged.due }), payment({ to: derived.address, units: '10000000' })]);
+    expect(gateway.invoice(tagged.id)!.status).toBe('paid');
+    expect(gateway.invoice(derived.id)!.status).toBe('paid');
+  });
+
+  it('drops finished invoices past the retention, keeps open ones, and forgets the dropped', async () => {
+    const { gateway, tick } = gatewayOf({ retentionDays: 1 });
+    const paid = await gateway.createInvoice({ amount: '5' });
+    await gateway.applyPayments([payment({ units: paid.due })]);
+    const open = await gateway.createInvoice({ amount: '6', expiresInSeconds: 30 * 86_400 });
+    tick(2 * 86_400_000);
+    await gateway.expire();
+    expect(gateway.invoice(paid.id)).toBeNull();
+    expect(gateway.invoice(open.id)!.status).toBe('open');
+    // A second payment of the dropped invoice's amount is now nobody's: recorded, not credited.
+    await gateway.applyPayments([payment({ units: paid.due })]);
+    expect(gateway.unmatched()[0]).toMatchObject({ reason: 'no_invoice_with_this_amount' });
+  });
 });
 
 describe('matching payments to invoices', () => {
@@ -391,6 +430,36 @@ describe('following the chain', () => {
     expect(second.gateway.invoice(invoice.id)).toMatchObject({ status: 'paid' });
     // The block's time was asked for when the log did not carry it.
     expect(second.gateway.invoice(invoice.id)!.payments[0]!.at).toBe(0x6b49d200 * 1000);
+  });
+
+  it('saves the block position at most every ten seconds when nothing else changed, and when it stops', async () => {
+    const head = { value: 100 };
+    const store = countingStore();
+    const { gateway, tick } = gatewayOf({ rpc: chain(head, []).rpc, store });
+    await gateway.poll();
+    expect(store.saves).toBe(1);
+    for (const block of [101, 102, 103]) {
+      head.value = block;
+      await gateway.poll();
+    }
+    expect(store.saves).toBe(1);
+    tick(10_000);
+    head.value = 104;
+    await gateway.poll();
+    expect(store.saves).toBe(2);
+    head.value = 105;
+    await gateway.poll();
+    // Stopping saves what is left.
+    const stop = new AbortController();
+    stop.abort();
+    await gateway.run(stop.signal);
+    expect(store.saves).toBe(3);
+    expect((await store.load())!.cursor).toBe(105);
+    // A payment is saved at once, whatever the clock.
+    const invoice = await gateway.createInvoice({ amount: '1' });
+    expect(store.saves).toBe(4);
+    await gateway.applyPayments([payment({ units: invoice.due })]);
+    expect(store.saves).toBe(5);
   });
 
   it('keeps its state in a JSON file across restarts, and refuses a file it cannot read', async () => {

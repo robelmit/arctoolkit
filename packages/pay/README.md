@@ -51,6 +51,8 @@ A plain transfer carries no reference, so the gateway offers two ways to know wh
 
 In `address` mode only public keys are involved: the gateway can derive and watch the addresses, and cannot move anything. For an `xpub` of `m/44'/60'/0'/0`, invoice address *i* is the merchant wallet's account *i*. Because Arc's gas coin is USDC, money received at those addresses can be moved on without first sending them gas.
 
+Use a key kept for the shop: whatever arrives at an invoice's address counts toward that invoice, even money sent there for another reason. When the receiving address is one of the key's own accounts (often account 0), the gateway skips it, so no invoice is ever given the address that `amount` mode matches by amount.
+
 ### What the gateway will not do
 
 It never guesses. These payments are recorded as **unmatched**, with the invoices a person may want to look at, and announced with a `payment.unmatched` webhook:
@@ -93,11 +95,15 @@ A delivery that fails is retried after 5 s, 30 s, 2 min, 10 min, 1 h and 6 h, th
 
 ## Following the chain
 
-`gateway.poll()` reads from the block it stopped at to the head; on a first start it begins at the head. Its position is saved, so after a restart it reads what it missed. A payment counted once is never counted again. `gateway.run(signal)` polls, expires and delivers webhooks every second. Arc blocks are final when made, so a payment is reported as soon as its block is read.
+`gateway.poll()` reads from the block it stopped at to the head; on a first start it begins at the head. Its position is saved, so after a restart it reads what it missed. A payment counted once is never counted again. `gateway.run(signal)` polls, expires and delivers webhooks every second, and saves what is left when the signal aborts. Arc blocks are final when made, so a payment is reported as soon as its block is read.
+
+Invoices, payments and webhooks are saved the moment they change. When only the block position moved, it is saved at most every ten seconds; after a crash the gateway reads those few seconds of blocks again, and the payments in them are skipped as already counted.
 
 ## Stores
 
-`JsonFilePayStore(path)` keeps everything in one file, written through a temporary file. `MemoryPayStore` is for tests. One process owns one store; a store for several processes wants a database behind the two-method `PayStore` interface.
+`JsonFilePayStore(path)` keeps everything in one file, written through a temporary file. `MemoryPayStore` is for tests. One process owns one store.
+
+The `PayStore` interface saves the whole state, so each change rewrites it. Finished invoices are dropped after `retentionDays` (90 by default), which keeps the file to what that period holds: comfortable for a shop taking hundreds of payments a day. A shop taking many thousands a day should lower `retentionDays` (its own records come from the webhooks) or wait for the incremental store this project plans.
 
 ## Rules it keeps
 
@@ -113,7 +119,7 @@ pnpm --filter @arctoolkit/pay test
 LIVE=1 pnpm --filter @arctoolkit/pay test     # reads Arc mainnet; never sends
 ```
 
-25 tests, plus 2 live tests that read a real ERC-20 transfer and a real native send on Arc mainnet.
+28 tests, plus 2 live tests that read a real ERC-20 transfer and a real native send on Arc mainnet.
 
 ## What it does not do
 

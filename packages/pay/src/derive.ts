@@ -41,7 +41,13 @@ export class AddressDeriver {
     if (typeof xpub !== 'string' || !/^[a-zA-Z]pub[1-9A-HJ-NP-Za-km-z]{100,112}$/.test(xpub.trim())) {
       throw new Error(/^[a-zA-Z]prv/.test(String(xpub)) ? 'that is an extended PRIVATE key; give the public one (xpub). The gateway never needs a private key' : 'not an extended public key (xpub…)');
     }
-    const node = HDKey.fromExtendedKey(xpub.trim());
+    let node: HDKey;
+    try {
+      node = HDKey.fromExtendedKey(xpub.trim());
+    } catch (error) {
+      // A typo or a truncated copy: base58check catches it.
+      throw new Error(`not an extended public key (xpub…): ${error instanceof Error ? error.message.toLowerCase() : 'it does not decode'}`);
+    }
     if (node.privateKey) throw new Error('that key holds a private part; give the public one (xpub)');
     if (!node.publicKey) throw new Error('the extended key has no public key');
     this.node = node;
