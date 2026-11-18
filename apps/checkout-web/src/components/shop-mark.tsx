@@ -4,7 +4,7 @@ import { cn } from 'cn';
 export function ShopMark({ name, className }: { name: string; className?: string }) {
   const initial = (name.trim()[0] ?? '?').toUpperCase();
   return (
-    <div aria-hidden className={cn('grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-base font-semibold text-primary-foreground shadow-sm', className)}>
+    <div aria-hidden className={cn('grid size-10 shrink-0 place-items-center rounded-full bg-primary-light text-base font-extrabold text-primary', className)}>
       {initial}
     </div>
   );
