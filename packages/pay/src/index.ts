@@ -9,3 +9,4 @@ export * from './store';
 export * from './watch';
 export * from './gateway';
 export * from './cctp';
+export * from './notify';

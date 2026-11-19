@@ -54,6 +54,8 @@ curl -X POST http://127.0.0.1:8790/v1/invoices \
 
 Send the customer to `checkoutUrl`, or draw `links.native` yourself. When the payment lands, the checkout POSTs `invoice.paid` to your `WEBHOOK_URL`; ship on that event, not on the page. [`examples/webhook-receiver`](../../examples/webhook-receiver) is a receiver that checks the signature and handles each event once.
 
+To hear of payments as they happen, set `NOTIFY_DISCORD_WEBHOOK_URL` or the Telegram pair: "💵 Paid: 25 USDC · Order 1042 · From 0x5bbe…692c" and the transaction link, and the same for a part payment, an invoice that expired, and a payment that matched no invoice. Notifications are a convenience, tried once; the signed webhook stays the record to build on.
+
 `dueAmount` is not a typo. With a single receiving address, each open invoice asks for a slightly different amount (the last digits are its tag), and that is how a payment is told apart. With `RECEIVE_XPUB` set, pass `"mode": "address"` and each invoice gets its own address and asks for the amount as given. The [pay README](../../packages/pay/README.md#telling-payments-apart) explains both.
 
 ## Routes
@@ -108,6 +110,8 @@ Anyone who has an invoice's id can see what is due and whether it is paid. Ids a
 | `RECEIVE_XPUB` | — | The shop's extended **public** key, for `address` mode. A private key is refused |
 | `API_KEY` | required | At least 24 characters |
 | `WEBHOOK_URL`, `WEBHOOK_SECRET` | — | Set both or neither; the secret is at least 16 characters |
+| `NOTIFY_DISCORD_WEBHOOK_URL` | — | A Discord channel webhook (channel settings → Integrations → Webhooks): a message there for each payment event, no bot needed |
+| `NOTIFY_TELEGRAM_BOT_TOKEN`, `NOTIFY_TELEGRAM_CHAT_ID` | — | Set both or neither: a bot from @BotFather and the chat it posts in (add the bot to the chat first) |
 | `ARC_RPC_URL` | the network's public endpoint | Checked at start: it must serve the chosen network |
 | `PUBLIC_URL` | each request's origin | The address customers reach, for `checkoutUrl` |
 | `SHOP_NAME` | `Checkout` | Shown on the payment page |

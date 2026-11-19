@@ -7,6 +7,8 @@
  *   RECEIVE_XPUB      the shop's extended public key (address mode). Never a private key.
  *   API_KEY           required: at least 24 characters; merchant routes need it as a bearer token
  *   WEBHOOK_URL       optional, with WEBHOOK_SECRET (at least 16 characters)
+ *   NOTIFY_DISCORD_WEBHOOK_URL                      optional: a message in a Discord channel for each payment event
+ *   NOTIFY_TELEGRAM_BOT_TOKEN, NOTIFY_TELEGRAM_CHAT_ID  optional: the same in a Telegram chat
  *   ARC_RPC_URL       default: the network's public endpoint
  *   PUBLIC_URL        where customers reach this server, for checkout links (default: each request's origin)
  *   SHOP_NAME         shown on the payment page (default "Checkout")
@@ -18,7 +20,7 @@
  */
 
 import { createEvmRpc, chainId } from '@arctoolkit/evm';
-import { AddressDeriver, Gateway, JsonFilePayStore, NETWORKS, type Network } from '@arctoolkit/pay';
+import { AddressDeriver, Gateway, JsonFilePayStore, NETWORKS, createNotifier, readNotifyTargets, type Network } from '@arctoolkit/pay';
 import { createServer, type IncomingMessage } from 'node:http';
 import { createCheckout } from './app';
 import { defaultWebDir, loadWeb } from './web';
@@ -61,6 +63,7 @@ export function readSettings(env: Readonly<Record<string, string | undefined>>) 
     receive: { ...(address ? { address } : {}), ...(xpub ? { xpub } : {}) },
     apiKey,
     webhook: webhookUrl && webhookSecret ? { url: webhookUrl, secret: webhookSecret } : null,
+    notify: readNotifyTargets(get),
     rpcUrl,
     publicUrl,
     shopName: get('SHOP_NAME') ?? 'Checkout',
@@ -98,6 +101,7 @@ async function main(): Promise<void> {
     receive: settings.receive,
     webhook: settings.webhook,
     log: (level, message, fields) => log(level, message, fields),
+    ...(settings.notify ? { onEvent: createNotifier(settings.notify, { log }) } : {}),
   });
   await gateway.load();
   const checkout = createCheckout({ gateway, network: settings.network, apiKey: settings.apiKey, shopName: settings.shopName, publicUrl: settings.publicUrl, crossChain: settings.crossChain, web });

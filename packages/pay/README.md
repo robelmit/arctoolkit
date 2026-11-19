@@ -89,6 +89,19 @@ verifyWebhook({ header: request.headers.get('arc-signature'), body: rawBody, sec
 
 A delivery that fails is retried after 5 s, 30 s, 2 min, 10 min, 1 h and 6 h, then dropped. Undelivered webhooks are kept in the store across restarts.
 
+## Notifications
+
+A short message in a Discord channel or a Telegram chat for each event, beside the signed webhook:
+
+```ts
+import { Gateway, createNotifier } from '@arctoolkit/pay';
+
+const notify = createNotifier({ discordWebhookUrl: 'https://discord.com/api/webhooks/…', telegram: { botToken: '…', chatId: '-100…' } });
+const gateway = new Gateway({ /* … */ onEvent: notify });
+```
+
+`notificationLines(event)` gives the text alone ("💵 Paid: 25 USDC", the order, the payer, the transaction link). A notification is tried once and a failure is logged; mentions are off on Discord, so nothing in an order can ping anyone. `readNotifyTargets` reads `NOTIFY_DISCORD_WEBHOOK_URL`, `NOTIFY_TELEGRAM_BOT_TOKEN` and `NOTIFY_TELEGRAM_CHAT_ID`.
+
 ## Payment links and QR codes
 
 `paymentLinks({ network, currency, to, units })` returns ERC-681 links a wallet opens with everything filled in: `native` asks for USDC as Arc's native coin (18-decimal value), `token` asks for an ERC-20 transfer (USDC or EURC). `qrSvg(link)` draws one as an SVG.
@@ -142,7 +155,7 @@ pnpm --filter @arctoolkit/pay test
 LIVE=1 pnpm --filter @arctoolkit/pay test     # reads Arc mainnet; never sends
 ```
 
-37 tests, plus 9 live tests: a real ERC-20 transfer, a real native send and a real CCTP mint read on Arc mainnet, and the CCTP route checked on each of the six source chains.
+40 tests, plus 9 live tests: a real ERC-20 transfer, a real native send and a real CCTP mint read on Arc mainnet, and the CCTP route checked on each of the six source chains.
 
 ## What it does not do
 
