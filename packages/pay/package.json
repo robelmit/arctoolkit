@@ -1,6 +1,6 @@
 {
   "name": "@arctoolkit/pay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Non-custodial USDC and EURC payments on Arc: invoices with a unique amount or a per-invoice address, payment links and QR codes, payment detection from the chain, and signed webhooks. The gateway never holds a key.",
   "license": "MIT",
   "repository": {
